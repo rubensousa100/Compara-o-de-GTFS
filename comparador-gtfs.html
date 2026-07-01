@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html lang="pt-PT">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Comparador de GTFS</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<style>
+  :root{
+    --bg: #0d1620;
+    --panel: #142230;
+    --panel-2: #1a2c3d;
+    --border: #24384a;
+    --text: #e8eef3;
+    --muted: #85a0b3;
+    --amber: #ffb100;
+    --green: #34d17c;
+    --red: #ff6b6b;
+    --mono: 'IBM Plex Mono', monospace;
+    --sans: 'Inter', system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin:0; padding:0; }
+  body{
+    background: var(--bg);
+    background-image:
+      linear-gradient(180deg, rgba(255,177,0,0.05), transparent 300px),
+      repeating-linear-gradient(180deg, rgba(255,255,255,0.012) 0px, rgba(255,255,255,0.012) 1px, transparent 1px, transparent 3px);
+    color: var(--text);
+    font-family: var(--sans);
+    min-height: 100vh;
+    line-height: 1.5;
+  }
+  a { color: var(--amber); }
+  .wrap{ max-width: 1100px; margin: 0 auto; padding: 32px 20px 80px; }
+
+  header.top{ margin-bottom: 28px; }
+  .eyebrow{
+    font-family: var(--mono); font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--amber); display:flex; align-items:center; gap:8px; margin-bottom:10px;
+  }
+  .eyebrow .dot{ width:7px; height:7px; border-radius:50%; background: var(--amber); box-shadow:0 0 8px var(--amber); }
+  h1{ font-family: var(--mono); font-size: clamp(26px, 4vw, 38px); margin: 0 0 8px; letter-spacing: -0.01em; }
+  .subtitle{ color: var(--muted); max-width: 640px; font-size: 15px; }
+  .privacy-note{ color: var(--muted); font-size: 13px; margin-top: 10px; display:flex; gap:6px; align-items:flex-start; }
+  .privacy-note svg{ flex-shrink:0; margin-top:2px; }
+
+  .upload-panel{ display:flex; align-items:stretch; gap:16px; margin: 28px 0 18px; }
+  .upload-card{
+    flex:1; background: var(--panel); border: 1px dashed var(--border); border-radius: 10px;
+    padding: 22px; text-align:center; transition: border-color .15s, background .15s; position:relative;
+  }
+  .upload-card.drag-over{ border-color: var(--amber); background: var(--panel-2); }
+  .upload-card.has-file{ border-style: solid; border-color: var(--green); }
+  .upload-card .month-tag{
+    font-family: var(--mono); font-size: 11px; text-transform:uppercase; letter-spacing:.1em;
+    color: var(--muted); display:block; margin-bottom: 8px;
+  }
+  .upload-card label.filepick{
+    display:inline-flex; align-items:center; gap:8px; cursor:pointer; background: var(--panel-2);
+    border: 1px solid var(--border); padding: 9px 16px; border-radius: 7px; font-size:14px; font-weight:600;
+  }
+  .upload-card label.filepick:hover{ border-color: var(--amber); }
+  .upload-card input[type=file]{ display:none; }
+  .file-label{ display:block; margin-top: 12px; font-family: var(--mono); font-size: 12.5px; color: var(--muted); word-break: break-all; }
+  .upload-card.has-file .file-label{ color: var(--green); }
+  .vs-arrow{ display:flex; align-items:center; justify-content:center; color: var(--amber); font-family: var(--mono); font-size: 20px; width: 32px; }
+
+  .actions{ display:flex; align-items:center; gap:14px; margin: 8px 0 24px; flex-wrap: wrap; }
+  button.primary{
+    font-family: var(--mono); font-weight:600; font-size: 14px; letter-spacing: .03em;
+    background: var(--amber); color: #241a00; border:none; padding: 13px 26px; border-radius: 7px;
+    cursor:pointer; transition: transform .1s, opacity .15s;
+  }
+  button.primary:disabled{ opacity:.35; cursor:not-allowed; }
+  button.primary:not(:disabled):hover{ transform: translateY(-1px); }
+  button.secondary{
+    font-family: var(--sans); font-size: 13.5px; background: transparent; color: var(--muted);
+    border: 1px solid var(--border); padding: 10px 16px; border-radius: 7px; cursor:pointer;
+  }
+  button.secondary:hover{ color: var(--text); border-color: var(--muted); }
+  #statusEl{ font-family: var(--mono); font-size: 13px; color: var(--amber); min-height: 18px; }
+
+  button:focus-visible, input:focus-visible, .tab-btn:focus-visible{ outline: 2px solid var(--amber); outline-offset: 2px; }
+
+  #dashboard{ margin: 30px 0; }
+  .counters{ display:grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 14px; }
+  .counter{ background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 18px 20px; }
+  .counter .num{ font-family: var(--mono); font-size: 34px; font-weight:700; font-variant-numeric: tabular-nums; }
+  .counter.added .num{ color: var(--green); }
+  .counter.removed .num{ color: var(--red); }
+  .counter.modified .num{ color: var(--amber); }
+  .counter .lbl{ font-size: 12.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; margin-top:4px; }
+  #fileNotes{ display:flex; flex-direction:column; gap:6px; }
+  .file-note{ font-size: 13px; font-family: var(--mono); padding: 8px 12px; border-radius:6px; border:1px solid var(--border); }
+  .file-note.added{ color: var(--green); border-color: rgba(52,209,124,.35); }
+  .file-note.removed{ color: var(--red); border-color: rgba(255,107,107,.35); }
+
+  #exportRow{ display:flex; justify-content:flex-end; margin: 6px 0 18px; }
+
+  #tabsEl{ display:flex; gap:6px; overflow-x:auto; padding-bottom: 4px; border-bottom: 1px solid var(--border); margin-bottom: 18px; }
+  .tab-btn{
+    flex-shrink:0; background: transparent; border:none; color: var(--muted); font-family: var(--sans);
+    font-size: 13.5px; padding: 10px 14px; border-bottom: 2px solid transparent; cursor:pointer; display:flex; gap:8px; align-items:center;
+    white-space: nowrap;
+  }
+  .tab-btn:hover{ color: var(--text); }
+  .tab-btn.active{ color: var(--text); border-bottom-color: var(--amber); }
+  .tab-badge{ font-family: var(--mono); font-size:11px; background: var(--panel-2); border:1px solid var(--border); padding: 1px 7px; border-radius: 10px; color: var(--muted); }
+  .tab-badge.has-changes{ color: var(--amber); border-color: rgba(255,177,0,.4); }
+
+  .file-banner{ font-family: var(--mono); font-size: 13px; padding: 10px 14px; border-radius: 7px; margin-bottom: 16px; }
+  .file-banner.added{ background: rgba(52,209,124,.1); color: var(--green); border:1px solid rgba(52,209,124,.3); }
+  .file-banner.removed{ background: rgba(255,107,107,.1); color: var(--red); border:1px solid rgba(255,107,107,.3); }
+
+  .diff-section{ margin-bottom: 22px; background: var(--panel); border:1px solid var(--border); border-radius: 10px; overflow:hidden; }
+  .section-header{ display:flex; align-items:center; gap:12px; padding: 12px 14px; border-bottom: 1px solid var(--border); background: var(--panel-2); }
+  .section-title{ font-weight:600; font-size: 13.5px; }
+  .diff-section.added .section-title{ color: var(--green); }
+  .diff-section.removed .section-title{ color: var(--red); }
+  .diff-section.modified .section-title{ color: var(--amber); }
+  .section-count{ font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  .search-box{
+    margin-left:auto; background: var(--bg); border:1px solid var(--border); border-radius:6px; color: var(--text);
+    font-size: 12.5px; padding: 6px 10px; width: 180px; font-family: var(--sans);
+  }
+  .list-container{ max-height: 420px; overflow-y:auto; }
+  .diff-list{ display:flex; flex-direction:column; }
+  .diff-item{ padding: 10px 14px; border-bottom: 1px solid var(--border); font-size: 13px; }
+  .diff-item:last-child{ border-bottom:none; }
+  .item-key{ font-family: var(--mono); font-weight:600; margin-right: 10px; }
+  .item-detail{ color: var(--muted); font-size: 12.5px; }
+  .changes{ margin-top: 6px; display:flex; flex-wrap:wrap; gap:6px; }
+  .change-chip{ background: var(--panel-2); border:1px solid var(--border); border-radius:5px; padding: 3px 8px; font-size: 11.5px; font-family: var(--mono); }
+  .change-chip s{ color: var(--red); opacity:.8; text-decoration: line-through; }
+  .change-chip.more{ color: var(--muted); }
+  .list-footer{ display:flex; justify-content:space-between; align-items:center; padding: 8px 14px; background: var(--panel-2); }
+  .count-info{ font-size: 11.5px; color: var(--muted); font-family: var(--mono); }
+  .btn-more{ font-size: 12px; background:transparent; border:1px solid var(--border); color: var(--text); padding: 5px 12px; border-radius:6px; cursor:pointer; }
+  .btn-more:hover{ border-color: var(--amber); }
+  .empty-note, .unchanged-note{ color: var(--muted); font-size: 13px; font-family: var(--mono); padding: 14px; text-align:center; }
+
+  footer.credits{ margin-top: 50px; color: var(--muted); font-size: 12.5px; text-align:center; }
+
+  @media (max-width: 640px){
+    .upload-panel{ flex-direction:column; }
+    .vs-arrow{ transform: rotate(90deg); margin: -4px auto; }
+    .counters{ grid-template-columns: 1fr; }
+    .search-box{ width: 120px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="top">
+    <div class="eyebrow"><span class="dot"></span> GTFS DIFF</div>
+    <h1>Comparador de GTFS</h1>
+    <p class="subtitle">Carrega dois ficheiros GTFS (.zip) — o antigo e o novo — e vê exatamente o que mudou: linhas, paragens, viagens, calendários, horários e traçados.</p>
+    <p class="privacy-note">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6l8-4z"/></svg>
+      Tudo é processado localmente no teu navegador. Os ficheiros GTFS não são enviados para nenhum servidor.
+    </p>
+  </header>
+
+  <section class="upload-panel">
+    <div class="upload-card" id="oldCard">
+      <span class="month-tag">GTFS antigo (ex: Junho)</span>
+      <label class="filepick" for="oldFileInput">Escolher ficheiro .zip</label>
+      <input type="file" id="oldFileInput" accept=".zip">
+      <span class="file-label" id="oldFileLabel">Nenhum ficheiro escolhido</span>
+    </div>
+    <div class="vs-arrow">&#8594;</div>
+    <div class="upload-card" id="newCard">
+      <span class="month-tag">GTFS novo (ex: Julho)</span>
+      <label class="filepick" for="newFileInput">Escolher ficheiro .zip</label>
+      <input type="file" id="newFileInput" accept=".zip">
+      <span class="file-label" id="newFileLabel">Nenhum ficheiro escolhido</span>
+    </div>
+  </section>
+
+  <div class="actions">
+    <button class="primary" id="compareBtn" disabled>Comparar GTFS</button>
+    <button class="secondary" id="resetBtn">Recomeçar</button>
+    <span id="statusEl" aria-live="polite"></span>
+  </div>
+
+  <div id="dashboard" hidden>
+    <div class="counters">
+      <div class="counter added"><div class="num" id="countAdded">0</div><div class="lbl">Adicionados</div></div>
+      <div class="counter removed"><div class="num" id="countRemoved">0</div><div class="lbl">Removidos</div></div>
+      <div class="counter modified"><div class="num" id="countModified">0</div><div class="lbl">Alterados</div></div>
+    </div>
+    <div id="fileNotes"></div>
+    <div id="exportRow"><button class="secondary" id="exportBtn">Exportar relatório (JSON)</button></div>
+  </div>
+
+  <div id="tabsEl" hidden></div>
+  <div id="panelEl"></div>
+
+  <footer class="credits">Ferramenta local de comparação de GTFS &middot; stop_times e shapes são comparados por assinatura agregada (por viagem / por traçado) para lidar com feeds grandes.</footer>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  // ---------- Configuration ----------
+
+  const FILE_CONFIGS = {
+    'agency.txt':         { label: 'Agências',               key: r => r.agency_id || 'default' },
+    'routes.txt':         { label: 'Linhas',                  key: r => r.route_id },
+    'stops.txt':          { label: 'Paragens',                key: r => r.stop_id },
+    'trips.txt':          { label: 'Viagens',                 key: r => r.trip_id },
+    'calendar.txt':       { label: 'Calendário',              key: r => r.service_id },
+    'calendar_dates.txt': { label: 'Exceções de calendário',  key: r => (r.service_id||'') + '|' + (r.date||'') },
+    'frequencies.txt':    { label: 'Frequências',             key: r => (r.trip_id||'') + '|' + (r.start_time||'') },
+    'fare_attributes.txt':{ label: 'Atributos de tarifa',     key: r => r.fare_id },
+    'fare_rules.txt':     { label: 'Regras de tarifa',        key: r => JSON.stringify(r) },
+    'transfers.txt':      { label: 'Transbordos',             key: r => (r.from_stop_id||'') + '|' + (r.to_stop_id||'') + '|' + (r.from_route_id||'') + '|' + (r.to_route_id||'') },
+    'feed_info.txt':      { label: 'Informação do feed',      key: () => 'feed' },
+    'levels.txt':         { label: 'Níveis',                  key: r => r.level_id },
+    'pathways.txt':       { label: 'Percursos (pathways)',    key: r => r.pathway_id },
+    'attributions.txt':   { label: 'Atribuições',             key: r => JSON.stringify(r) },
+  };
+
+  const AGGREGATE_CONFIGS = {
+    'stop_times.txt': { label: 'Horários (stop_times)', parentKey: 'trip_id',  seqField: 'stop_sequence',      sigFields: ['stop_id','arrival_time','departure_time','pickup_type','drop_off_type'] },
+    'shapes.txt':     { label: 'Traçados (shapes)',     parentKey: 'shape_id', seqField: 'shape_pt_sequence',  sigFields: ['shape_pt_lat','shape_pt_lon'] },
+  };
+
+  const PRIORITY_ORDER = ['routes.txt','trips.txt','stops.txt','calendar.txt','calendar_dates.txt','stop_times.txt','shapes.txt','frequencies.txt','agency.txt','fare_attributes.txt','fare_rules.txt','transfers.txt','feed_info.txt'];
+
+  const DISPLAY_HINT_FIELDS = ['route_short_name','route_long_name','stop_name','trip_headsign','agency_name','fare_id','service_id'];
+
+  // ---------- Helpers ----------
+
+  function esc(s){
+    return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  function fmt(n){ return Number(n).toLocaleString('pt-PT'); }
+
+  function updateStatus(msg){
+    document.getElementById('statusEl').textContent = msg;
+  }
+
+  function getDisplayInfo(row){
+    for (const f of DISPLAY_HINT_FIELDS){
+      if (row && row[f]) return row[f];
+    }
+    return '';
+  }
+
+  // ---------- Parsing ----------
+
+  async function parseGTFSZip(file, label){
+    const zip = await JSZip.loadAsync(file);
+    const data = {};
+    const entries = Object.keys(zip.files).filter(n => !zip.files[n].dir && n.toLowerCase().endsWith('.txt'));
+    for (const name of entries){
+      const base = name.split('/').pop();
+      updateStatus(`A ler ${label}: ${base}...`);
+      const text = await zip.files[name].async('string');
+      const parsed = Papa.parse(text, { header: true, skipEmptyLines: true });
+      data[base] = { rows: parsed.data, fields: parsed.meta.fields || [] };
+      // yield to the browser so the status text can repaint
+      await new Promise(r => setTimeout(r, 0));
+    }
+    return data;
+  }
+
+  // ---------- Diffing ----------
+
+  function diffEntityFile(oldRows, newRows, keyFn){
+    const oldMap = new Map();
+    oldRows.forEach(r => oldMap.set(keyFn(r), r));
+    const newMap = new Map();
+    newRows.forEach(r => newMap.set(keyFn(r), r));
+
+    const added = [], removed = [], modified = [];
+    let unchanged = 0;
+
+    for (const [k, r] of oldMap){
+      if (!newMap.has(k)) removed.push({ key: k, row: r });
+    }
+    for (const [k, r] of newMap){
+      if (!oldMap.has(k)){
+        added.push({ key: k, row: r });
+      } else {
+        const oldRow = oldMap.get(k);
+        const fields = new Set([...Object.keys(oldRow), ...Object.keys(r)]);
+        const changes = [];
+        for (const f of fields){
+          const ov = (oldRow[f] ?? '').toString().trim();
+          const nv = (r[f] ?? '').toString().trim();
+          if (ov !== nv) changes.push({ field: f, old: ov, new: nv });
+        }
+        if (changes.length) modified.push({ key: k, old: oldRow, new: r, changes });
+        else unchanged++;
+      }
+    }
+    return { added, removed, modified, unchanged };
+  }
+
+  function buildSignatures(rows, cfg){
+    const groups = new Map();
+    rows.forEach(r => {
+      const pk = r[cfg.parentKey];
+      if (pk === undefined) return;
+      if (!groups.has(pk)) groups.set(pk, []);
+      groups.get(pk).push(r);
+    });
+    const sigs = new Map();
+    for (const [pk, list] of groups){
+      list.sort((a,b) => Number(a[cfg.seqField]) - Number(b[cfg.seqField]));
+      const sig = list.map(r => cfg.sigFields.map(f => (r[f] ?? '').toString().trim()).join(',')).join(';');
+      sigs.set(pk, { sig, count: list.length });
+    }
+    return sigs;
+  }
+
+  function diffAggregateFile(oldRows, newRows, cfg){
+    const oldSigs = buildSignatures(oldRows, cfg);
+    const newSigs = buildSignatures(newRows, cfg);
+    const added = [], removed = [], modified = [];
+    let unchanged = 0;
+
+    for (const [pk, o] of oldSigs){
+      if (!newSigs.has(pk)) removed.push({ key: pk, count: o.count });
+    }
+    for (const [pk, n] of newSigs){
+      if (!oldSigs.has(pk)){
+        added.push({ key: pk, count: n.count });
+      } else {
+        const o = oldSigs.get(pk);
+        if (o.sig !== n.sig) modified.push({ key: pk, oldCount: o.count, newCount: n.count });
+        else unchanged++;
+      }
+    }
+    return { added, removed, modified, unchanged };
+  }
+
+  function computeAllDiffs(oldData, newData){
+    const allFiles = new Set([...Object.keys(oldData), ...Object.keys(newData)]);
+    const results = [];
+
+    for (const filename of allFiles){
+      const oldEntry = oldData[filename] || { rows: [], fields: [] };
+      const newEntry = newData[filename] || { rows: [], fields: [] };
+      const onlyOld = !newData[filename];
+      const onlyNew = !oldData[filename];
+
+      if (AGGREGATE_CONFIGS[filename]){
+        const cfg = AGGREGATE_CONFIGS[filename];
+        const diff = diffAggregateFile(oldEntry.rows, newEntry.rows, cfg);
+        results.push({ filename, label: cfg.label, type: 'aggregate', diff, onlyOld, onlyNew });
+      } else {
+        let keyFn, label = filename;
+        if (FILE_CONFIGS[filename]){
+          keyFn = FILE_CONFIGS[filename].key;
+          label = FILE_CONFIGS[filename].label;
+        } else {
+          const fields = newEntry.fields.length ? newEntry.fields : oldEntry.fields;
+          const idField = fields.find(f => f.toLowerCase().endsWith('_id'));
+          keyFn = idField ? (r => r[idField]) : (r => JSON.stringify(r));
+        }
+        const diff = diffEntityFile(oldEntry.rows, newEntry.rows, keyFn);
+        results.push({ filename, label, type: 'entity', diff, onlyOld, onlyNew });
+      }
+    }
+
+    results.sort((a, b) => {
+      const ia = PRIORITY_ORDER.indexOf(a.filename), ib = PRIORITY_ORDER.indexOf(b.filename);
+      if (ia === -1 && ib === -1) return a.filename.localeCompare(b.filename);
+      if (ia === -1) return 1;
+      if (ib === -1) return -1;
+      return ia - ib;
+    });
+
+    return results;
+  }
+
+  // ---------- Rendering ----------
+
+  let gtfsResults = [];
+
+  function animateCount(el, target, duration){
+    duration = duration || 600;
+    const startTime = performance.now();
+    function step(now){
+      const progress = Math.min((now - startTime) / duration, 1);
+      el.textContent = fmt(Math.floor(progress * target));
+      if (progress < 1) requestAnimationFrame(step);
+      else el.textContent = fmt(target);
+    }
+    requestAnimationFrame(step);
+  }
+
+  function renderSummary(results){
+    const totals = { added: 0, removed: 0, modified: 0 };
+    results.forEach(r => {
+      totals.added += r.diff.added.length;
+      totals.removed += r.diff.removed.length;
+      totals.modified += r.diff.modified.length;
+    });
+
+    document.getElementById('dashboard').hidden = false;
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const setCount = (id, val) => {
+      const el = document.getElementById(id);
+      if (reduceMotion) el.textContent = fmt(val);
+      else animateCount(el, val);
+    };
+    setCount('countAdded', totals.added);
+    setCount('countRemoved', totals.removed);
+    setCount('countModified', totals.modified);
+
+    const onlyNewFiles = results.filter(r => r.onlyNew).map(r => r.filename);
+    const onlyOldFiles = results.filter(r => r.onlyOld).map(r => r.filename);
+    let notesHtml = '';
+    if (onlyNewFiles.length) notesHtml += `<div class="file-note added">Ficheiros novos: ${onlyNewFiles.map(esc).join(', ')}</div>`;
+    if (onlyOldFiles.length) notesHtml += `<div class="file-note removed">Ficheiros removidos: ${onlyOldFiles.map(esc).join(', ')}</div>`;
+    document.getElementById('fileNotes').innerHTML = notesHtml;
+  }
+
+  function renderTabs(results){
+    const tabsEl = document.getElementById('tabsEl');
+    tabsEl.hidden = false;
+    tabsEl.innerHTML = '';
+    results.forEach(r => {
+      const changeCount = r.diff.added.length + r.diff.removed.length + r.diff.modified.length;
+      const btn = document.createElement('button');
+      btn.className = 'tab-btn';
+      btn.dataset.filename = r.filename;
+      btn.innerHTML = `${esc(r.label)} <span class="tab-badge ${changeCount ? 'has-changes' : ''}">${fmt(changeCount)}</span>`;
+      btn.addEventListener('click', () => selectTab(r.filename));
+      tabsEl.appendChild(btn);
+    });
+  }
+
+  function renderPaginatedList(container, items, renderItemFn, pageSize){
+    pageSize = pageSize || 150;
+    container.innerHTML = '';
+    if (items.length === 0){
+      container.innerHTML = '<div class="empty-note">Sem registos.</div>';
+      return;
+    }
+    const listEl = document.createElement('div');
+    listEl.className = 'diff-list';
+    container.appendChild(listEl);
+
+    const footer = document.createElement('div');
+    footer.className = 'list-footer';
+    const countInfo = document.createElement('span');
+    countInfo.className = 'count-info';
+    const moreBtn = document.createElement('button');
+    moreBtn.className = 'btn-more';
+    moreBtn.textContent = 'Mostrar mais';
+    footer.appendChild(countInfo);
+    footer.appendChild(moreBtn);
+    container.appendChild(footer);
+
+    let shown = 0;
+    function renderMore(){
+      const next = items.slice(shown, shown + pageSize);
+      const html = next.map(renderItemFn).join('');
+      listEl.insertAdjacentHTML('beforeend', html);
+      shown += next.length;
+      countInfo.textContent = `A mostrar ${fmt(shown)} de ${fmt(items.length)}`;
+      moreBtn.style.display = shown < items.length ? '' : 'none';
+    }
+    moreBtn.addEventListener('click', renderMore);
+    renderMore();
+  }
+
+  function getItemRenderer(type, sectionKey){
+    if (type === 'aggregate'){
+      if (sectionKey === 'modified'){
+        return item => `<div class="diff-item"><span class="item-key">${esc(item.key)}</span><span class="item-detail">${fmt(item.oldCount)} &#8594; ${fmt(item.newCount)} registos associados</span></div>`;
+      }
+      return item => `<div class="diff-item"><span class="item-key">${esc(item.key)}</span><span class="item-detail">${fmt(item.count)} registos associados</span></div>`;
+    }
+    if (sectionKey === 'modified'){
+      return item => {
+        const shown = item.changes.slice(0, 12);
+        const changesHtml = shown.map(c => `<span class="change-chip"><b>${esc(c.field)}</b>: <s>${esc(c.old) || '&#8709;'}</s> &#8594; ${esc(c.new) || '&#8709;'}</span>`).join('');
+        const extra = item.changes.length > 12 ? `<span class="change-chip more">+${item.changes.length - 12} mais</span>` : '';
+        return `<div class="diff-item"><span class="item-key">${esc(item.key)}</span><div class="changes">${changesHtml}${extra}</div></div>`;
+      };
+    }
+    return item => {
+      const display = getDisplayInfo(item.row);
+      return `<div class="diff-item"><span class="item-key">${esc(item.key)}</span>${display ? `<span class="item-detail">${esc(display)}</span>` : ''}</div>`;
+    };
+  }
+
+  function selectTab(filename){
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.filename === filename));
+    const result = gtfsResults.find(r => r.filename === filename);
+    const panel = document.getElementById('panelEl');
+    panel.innerHTML = '';
+
+    if (result.onlyOld){
+      panel.insertAdjacentHTML('beforeend', '<div class="file-banner removed">Este ficheiro só existe no GTFS antigo — foi removido no novo feed.</div>');
+    } else if (result.onlyNew){
+      panel.insertAdjacentHTML('beforeend', '<div class="file-banner added">Este ficheiro é novo — não existia no GTFS antigo.</div>');
+    }
+
+    const sections = [
+      { key: 'added',    label: 'Adicionados', cls: 'added',    items: result.diff.added },
+      { key: 'removed',  label: 'Removidos',   cls: 'removed',  items: result.diff.removed },
+      { key: 'modified', label: 'Alterados',   cls: 'modified', items: result.diff.modified },
+    ];
+
+    let anyShown = false;
+    sections.forEach(sec => {
+      if (sec.items.length === 0) return;
+      anyShown = true;
+      const secEl = document.createElement('div');
+      secEl.className = `diff-section ${sec.cls}`;
+      secEl.innerHTML = `
+        <div class="section-header">
+          <span class="section-title">${sec.label}</span>
+          <span class="section-count">${fmt(sec.items.length)}</span>
+          <input type="text" class="search-box" placeholder="Filtrar por ID...">
+        </div>
+        <div class="list-container"></div>
+      `;
+      panel.appendChild(secEl);
+      const listContainer = secEl.querySelector('.list-container');
+      const searchBox = secEl.querySelector('.search-box');
+      const renderFn = getItemRenderer(result.type, sec.key);
+
+      renderPaginatedList(listContainer, sec.items, renderFn);
+
+      let debounceTimer;
+      searchBox.addEventListener('input', () => {
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+          const q = searchBox.value.trim().toLowerCase();
+          const filtered = q ? sec.items.filter(it => String(it.key).toLowerCase().includes(q)) : sec.items;
+          renderPaginatedList(listContainer, filtered, renderFn);
+        }, 150);
+      });
+    });
+
+    if (result.diff.unchanged){
+      panel.insertAdjacentHTML('beforeend', `<div class="unchanged-note">${fmt(result.diff.unchanged)} registos sem alterações.</div>`);
+      anyShown = true;
+    }
+    if (!anyShown){
+      panel.insertAdjacentHTML('beforeend', '<div class="empty-note">Sem dados para comparar neste ficheiro.</div>');
+    }
+  }
+
+  function renderResults(results){
+    gtfsResults = results;
+    renderSummary(results);
+    renderTabs(results);
+    if (results.length) selectTab(results[0].filename);
+  }
+
+  // ---------- File input wiring ----------
+
+  let oldFile = null, newFile = null;
+
+  function setupFileInput(inputId, labelId, cardId, isOld){
+    const input = document.getElementById(inputId);
+    input.addEventListener('change', e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      if (isOld) oldFile = file; else newFile = file;
+      document.getElementById(labelId).textContent = `${file.name} (${(file.size/1024/1024).toFixed(1)} MB)`;
+      document.getElementById(cardId).classList.add('has-file');
+      document.getElementById('compareBtn').disabled = !(oldFile && newFile);
+    });
+
+    const card = document.getElementById(cardId);
+    ['dragover','dragenter'].forEach(evt => card.addEventListener(evt, e => { e.preventDefault(); card.classList.add('drag-over'); }));
+    ['dragleave','drop'].forEach(evt => card.addEventListener(evt, e => { e.preventDefault(); card.classList.remove('drag-over'); }));
+    card.addEventListener('drop', e => {
+      if (e.dataTransfer.files && e.dataTransfer.files.length){
+        input.files = e.dataTransfer.files;
+        input.dispatchEvent(new Event('change'));
+      }
+    });
+  }
+
+  setupFileInput('oldFileInput', 'oldFileLabel', 'oldCard', true);
+  setupFileInput('newFileInput', 'newFileLabel', 'newCard', false);
+
+  document.getElementById('compareBtn').addEventListener('click', async () => {
+    const btn = document.getElementById('compareBtn');
+    btn.disabled = true;
+    try {
+      updateStatus('A carregar GTFS antigo...');
+      const oldData = await parseGTFSZip(oldFile, 'GTFS antigo');
+      updateStatus('A carregar GTFS novo...');
+      const newData = await parseGTFSZip(newFile, 'GTFS novo');
+      updateStatus('A calcular diferenças...');
+      await new Promise(r => setTimeout(r, 0));
+      const results = computeAllDiffs(oldData, newData);
+      renderResults(results);
+      updateStatus('Comparação concluída.');
+    } catch (err){
+      console.error(err);
+      updateStatus('Erro ao processar os ficheiros: ' + err.message);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  document.getElementById('resetBtn').addEventListener('click', () => location.reload());
+
+  document.getElementById('exportBtn').addEventListener('click', () => {
+    const report = gtfsResults.map(r => ({
+      ficheiro: r.filename,
+      apenas_no_antigo: r.onlyOld,
+      apenas_no_novo: r.onlyNew,
+      adicionados: r.diff.added.length,
+      removidos: r.diff.removed.length,
+      alterados: r.diff.modified.length,
+      inalterados: r.diff.unchanged,
+      ids_adicionados: r.diff.added.map(i => i.key),
+      ids_removidos: r.diff.removed.map(i => i.key),
+      alteracoes: r.diff.modified.map(i => ({
+        id: i.key,
+        detalhe: i.changes ? i.changes.map(c => ({ campo: c.field, antes: c.old, depois: c.new })) : `${i.oldCount} -> ${i.newCount} registos`,
+      })),
+    }));
+    const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'relatorio-diferencas-gtfs.json';
+    a.click();
+    URL.revokeObjectURL(url);
+  });
+
+})();
+</script>
+</body>
+</html>
