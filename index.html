@@ -19,6 +19,7 @@
     --amber: #ffb100;
     --green: #34d17c;
     --red: #ff6b6b;
+    --teal: #56d6d1;
     --mono: 'IBM Plex Mono', monospace;
     --sans: 'Inter', system-ui, sans-serif;
   }
@@ -87,12 +88,13 @@
   button:focus-visible, input:focus-visible, .tab-btn:focus-visible{ outline: 2px solid var(--amber); outline-offset: 2px; }
 
   #dashboard{ margin: 30px 0; }
-  .counters{ display:grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 14px; }
+  .counters{ display:grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 14px; }
   .counter{ background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 18px 20px; }
   .counter .num{ font-family: var(--mono); font-size: 34px; font-weight:700; font-variant-numeric: tabular-nums; }
   .counter.added .num{ color: var(--green); }
   .counter.removed .num{ color: var(--red); }
   .counter.modified .num{ color: var(--amber); }
+  .counter.renamed .num{ color: var(--teal); }
   .counter .lbl{ font-size: 12.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; margin-top:4px; }
   #fileNotes{ display:flex; flex-direction:column; gap:6px; }
   .file-note{ font-size: 13px; font-family: var(--mono); padding: 8px 12px; border-radius:6px; border:1px solid var(--border); }
@@ -115,6 +117,7 @@
   .file-banner{ font-family: var(--mono); font-size: 13px; padding: 10px 14px; border-radius: 7px; margin-bottom: 16px; }
   .file-banner.added{ background: rgba(52,209,124,.1); color: var(--green); border:1px solid rgba(52,209,124,.3); }
   .file-banner.removed{ background: rgba(255,107,107,.1); color: var(--red); border:1px solid rgba(255,107,107,.3); }
+  .file-banner.renamed-banner{ background: rgba(86,214,209,.1); color: var(--teal); border:1px solid rgba(86,214,209,.3); }
 
   .diff-section{ margin-bottom: 22px; background: var(--panel); border:1px solid var(--border); border-radius: 10px; overflow:hidden; }
   .section-header{ display:flex; align-items:center; gap:12px; padding: 12px 14px; border-bottom: 1px solid var(--border); background: var(--panel-2); }
@@ -122,6 +125,8 @@
   .diff-section.added .section-title{ color: var(--green); }
   .diff-section.removed .section-title{ color: var(--red); }
   .diff-section.modified .section-title{ color: var(--amber); }
+  .diff-section.renamed .section-title{ color: var(--teal); }
+  .item-key .rename-arrow{ color: var(--teal); margin: 0 6px; }
   .section-count{ font-family: var(--mono); font-size: 12px; color: var(--muted); }
   .search-box{
     margin-left:auto; background: var(--bg); border:1px solid var(--border); border-radius:6px; color: var(--text);
@@ -148,7 +153,7 @@
   @media (max-width: 640px){
     .upload-panel{ flex-direction:column; }
     .vs-arrow{ transform: rotate(90deg); margin: -4px auto; }
-    .counters{ grid-template-columns: 1fr; }
+    .counters{ grid-template-columns: repeat(2, 1fr); }
     .search-box{ width: 120px; }
   }
 </style>
@@ -190,6 +195,7 @@
 
   <div id="dashboard" hidden>
     <div class="counters">
+      <div class="counter renamed"><div class="num" id="countRenamed">0</div><div class="lbl">Prováveis correspondências</div></div>
       <div class="counter added"><div class="num" id="countAdded">0</div><div class="lbl">Adicionados</div></div>
       <div class="counter removed"><div class="num" id="countRemoved">0</div><div class="lbl">Removidos</div></div>
       <div class="counter modified"><div class="num" id="countModified">0</div><div class="lbl">Alterados</div></div>
@@ -344,6 +350,83 @@
     return { added, removed, modified, unchanged };
   }
 
+  // Builds trip_id -> departure time at the earliest stop_sequence, used to
+  // recognise "the same physical trip" even when trip_id itself changes.
+  function buildFirstDeparture(rows){
+    const map = new Map();
+    const bestSeq = new Map();
+    rows.forEach(r => {
+      const tid = r.trip_id;
+      if (tid === undefined) return;
+      const seq = Number(r.stop_sequence);
+      if (!bestSeq.has(tid) || seq < bestSeq.get(tid)){
+        bestSeq.set(tid, seq);
+        map.set(tid, r.departure_time || r.arrival_time || '');
+      }
+    });
+    return map;
+  }
+
+  // Attempts to pair up trips that show as "removed" + "added" (different
+  // trip_id) but are almost certainly the same physical trip - e.g. only the
+  // service_id/calendar code embedded in the trip_id changed. Matching is
+  // based on route + direction + headsign + first departure time, and only
+  // accepted when exactly one candidate exists on each side (no ambiguity).
+  function matchRenamedTrips(diff, oldFirstDep, newFirstDep){
+    const keyOf = (row, firstDepMap) => [
+      row.route_id || '',
+      row.direction_id || '',
+      row.trip_headsign || '',
+      row.shape_id || '',
+      firstDepMap.get(row.trip_id) || '',
+    ].join('|');
+
+    const removedByKey = new Map();
+    diff.removed.forEach(item => {
+      const k = keyOf(item.row, oldFirstDep);
+      if (!removedByKey.has(k)) removedByKey.set(k, []);
+      removedByKey.get(k).push(item);
+    });
+    const addedByKey = new Map();
+    diff.added.forEach(item => {
+      const k = keyOf(item.row, newFirstDep);
+      if (!addedByKey.has(k)) addedByKey.set(k, []);
+      addedByKey.get(k).push(item);
+    });
+
+    const renamed = [];
+    const stillRemoved = [];
+    const consumedAdded = new Set();
+
+    for (const [k, removedItems] of removedByKey){
+      const addedItems = addedByKey.get(k);
+      if (removedItems.length === 1 && addedItems && addedItems.length === 1){
+        const oldRow = removedItems[0].row, newRow = addedItems[0].row;
+        const fields = new Set([...Object.keys(oldRow), ...Object.keys(newRow)]);
+        const changes = [];
+        for (const f of fields){
+          if (f === 'trip_id') continue; // implied by oldKey -> newKey already
+          const ov = (oldRow[f] ?? '').toString().trim();
+          const nv = (newRow[f] ?? '').toString().trim();
+          if (ov !== nv) changes.push({ field: f, old: ov, new: nv });
+        }
+        renamed.push({
+          key: `${removedItems[0].key} \u2192 ${addedItems[0].key}`,
+          oldKey: removedItems[0].key,
+          newKey: addedItems[0].key,
+          old: oldRow, new: newRow, changes,
+        });
+        consumedAdded.add(addedItems[0].key);
+      } else {
+        stillRemoved.push(...removedItems);
+      }
+    }
+
+    diff.removed = stillRemoved;
+    diff.added = diff.added.filter(item => !consumedAdded.has(item.key));
+    diff.renamed = renamed;
+  }
+
   function computeAllDiffs(oldData, newData){
     const allFiles = new Set([...Object.keys(oldData), ...Object.keys(newData)]);
     const results = [];
@@ -369,6 +452,15 @@
           keyFn = idField ? (r => r[idField]) : (r => JSON.stringify(r));
         }
         const diff = diffEntityFile(oldEntry.rows, newEntry.rows, keyFn);
+
+        if (filename === 'trips.txt' && diff.added.length && diff.removed.length){
+          const oldStopTimes = (oldData['stop_times.txt'] || { rows: [] }).rows;
+          const newStopTimes = (newData['stop_times.txt'] || { rows: [] }).rows;
+          matchRenamedTrips(diff, buildFirstDeparture(oldStopTimes), buildFirstDeparture(newStopTimes));
+        } else {
+          diff.renamed = [];
+        }
+
         results.push({ filename, label, type: 'entity', diff, onlyOld, onlyNew });
       }
     }
@@ -401,11 +493,12 @@
   }
 
   function renderSummary(results){
-    const totals = { added: 0, removed: 0, modified: 0 };
+    const totals = { added: 0, removed: 0, modified: 0, renamed: 0 };
     results.forEach(r => {
       totals.added += r.diff.added.length;
       totals.removed += r.diff.removed.length;
       totals.modified += r.diff.modified.length;
+      totals.renamed += (r.diff.renamed || []).length;
     });
 
     document.getElementById('dashboard').hidden = false;
@@ -418,6 +511,7 @@
     setCount('countAdded', totals.added);
     setCount('countRemoved', totals.removed);
     setCount('countModified', totals.modified);
+    setCount('countRenamed', totals.renamed);
 
     const onlyNewFiles = results.filter(r => r.onlyNew).map(r => r.filename);
     const onlyOldFiles = results.filter(r => r.onlyOld).map(r => r.filename);
@@ -432,7 +526,7 @@
     tabsEl.hidden = false;
     tabsEl.innerHTML = '';
     results.forEach(r => {
-      const changeCount = r.diff.added.length + r.diff.removed.length + r.diff.modified.length;
+      const changeCount = r.diff.added.length + r.diff.removed.length + r.diff.modified.length + (r.diff.renamed || []).length;
       const btn = document.createElement('button');
       btn.className = 'tab-btn';
       btn.dataset.filename = r.filename;
@@ -484,6 +578,15 @@
       }
       return item => `<div class="diff-item"><span class="item-key">${esc(item.key)}</span><span class="item-detail">${fmt(item.count)} registos associados</span></div>`;
     }
+    if (sectionKey === 'renamed'){
+      return item => {
+        const shown = item.changes.slice(0, 12);
+        const changesHtml = shown.map(c => `<span class="change-chip"><b>${esc(c.field)}</b>: <s>${esc(c.old) || '&#8709;'}</s> &#8594; ${esc(c.new) || '&#8709;'}</span>`).join('');
+        const extra = item.changes.length > 12 ? `<span class="change-chip more">+${item.changes.length - 12} mais</span>` : '';
+        const changesBlock = shown.length ? `<div class="changes">${changesHtml}${extra}</div>` : '<div class="item-detail">Sem outros campos alterados além do ID.</div>';
+        return `<div class="diff-item"><span class="item-key">${esc(item.oldKey)}<span class="rename-arrow">&#8594;</span>${esc(item.newKey)}</span>${changesBlock}</div>`;
+      };
+    }
     if (sectionKey === 'modified'){
       return item => {
         const shown = item.changes.slice(0, 12);
@@ -510,7 +613,12 @@
       panel.insertAdjacentHTML('beforeend', '<div class="file-banner added">Este ficheiro é novo — não existia no GTFS antigo.</div>');
     }
 
+    if ((result.diff.renamed || []).length){
+      panel.insertAdjacentHTML('beforeend', '<div class="file-banner renamed-banner">Estas viagens têm um ID totalmente diferente, mas parecem ser a mesma viagem física (mesma linha, direção, destino e hora de partida) — provavelmente só o código de calendário mudou. Correspondência automática por heurística: confirma sempre antes de assumir.</div>');
+    }
+
     const sections = [
+      { key: 'renamed',  label: 'Prováveis correspondências (ID mudou)', cls: 'renamed',  items: result.diff.renamed || [] },
       { key: 'added',    label: 'Adicionados', cls: 'added',    items: result.diff.added },
       { key: 'removed',  label: 'Removidos',   cls: 'removed',  items: result.diff.removed },
       { key: 'modified', label: 'Alterados',   cls: 'modified', items: result.diff.modified },
@@ -624,12 +732,18 @@
       adicionados: r.diff.added.length,
       removidos: r.diff.removed.length,
       alterados: r.diff.modified.length,
+      provaveis_correspondencias: (r.diff.renamed || []).length,
       inalterados: r.diff.unchanged,
       ids_adicionados: r.diff.added.map(i => i.key),
       ids_removidos: r.diff.removed.map(i => i.key),
       alteracoes: r.diff.modified.map(i => ({
         id: i.key,
         detalhe: i.changes ? i.changes.map(c => ({ campo: c.field, antes: c.old, depois: c.new })) : `${i.oldCount} -> ${i.newCount} registos`,
+      })),
+      correspondencias_provaveis: (r.diff.renamed || []).map(i => ({
+        id_antigo: i.oldKey,
+        id_novo: i.newKey,
+        detalhe: i.changes.map(c => ({ campo: c.field, antes: c.old, depois: c.new })),
       })),
     }));
     const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
