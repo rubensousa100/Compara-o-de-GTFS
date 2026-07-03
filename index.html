@@ -8,6 +8,7 @@
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
   :root{
     --bg: #0d1620;
@@ -103,20 +104,7 @@
   .file-note.added{ color: var(--green); border-color: rgba(52,209,124,.35); }
   .file-note.removed{ color: var(--red); border-color: rgba(255,107,107,.35); }
 
-  #exportRow{ display:flex; justify-content:flex-end; margin: 6px 0 18px; }
-
-  #dateCompare{ background: var(--panel); border:1px solid var(--border); border-radius:10px; padding:18px 20px; margin: 0 0 26px; }
-  .date-compare-header{ display:flex; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:14px; }
-  .date-compare-title{ font-family: var(--mono); font-weight:600; font-size:14px; color: var(--text); }
-  .date-compare-sub{ width:100%; color: var(--muted); font-size:12.5px; margin:-8px 0 4px; }
-  #dateInput{ background: var(--bg); border:1px solid var(--border); color: var(--text); font-family: var(--sans); font-size:13.5px; padding:7px 10px; border-radius:6px; }
-  #dateInput:focus-visible{ outline:2px solid var(--amber); outline-offset:2px; }
-  .date-compare-info{ font-family: var(--mono); font-size:12.5px; color: var(--muted); }
-  .counters.small{ grid-template-columns: repeat(6, 1fr); margin-bottom: 16px; gap: 10px; }
-  .counter.small{ padding: 12px 10px; }
-  .counter.small .num{ font-size: 21px; }
-  .counter.small .lbl{ font-size: 10px; line-height:1.3; }
-  @media (max-width: 780px){ .counters.small{ grid-template-columns: repeat(3, 1fr); } }
+  #exportRow{ display:flex; justify-content:flex-end; gap:10px; margin: 6px 0 18px; }
 
   #tabsEl{ display:flex; gap:6px; overflow-x:auto; padding-bottom: 4px; border-bottom: 1px solid var(--border); margin-bottom: 18px; }
   .tab-btn{
@@ -217,18 +205,7 @@
       <div class="counter modified"><div class="num" id="countModified">0</div><div class="lbl">Alterados</div></div>
     </div>
     <div id="fileNotes"></div>
-    <div id="exportRow"><button class="secondary" id="exportBtn">Exportar relatório (JSON)</button></div>
-  </div>
-
-  <div id="dateCompare" hidden>
-    <div class="date-compare-header">
-      <span class="date-compare-title">Serviço efetivo numa data específica</span>
-      <input type="date" id="dateInput">
-      <span class="date-compare-info" id="dateCompareInfo"></span>
-    </div>
-    <p class="date-compare-sub">Resolve calendar.txt + calendar_dates.txt para saber exatamente que viagens correm nesta data em cada feed — apanha exceções de calendário que não aparecem nos diffs ficheiro-a-ficheiro.</p>
-    <div class="counters small" id="dateCompareCounters"></div>
-    <div id="dateComparePanel"></div>
+    <div id="exportRow"><button class="secondary" id="exportExcelBtn">Exportar Excel</button><button class="secondary" id="exportBtn">Exportar relatório (JSON)</button></div>
   </div>
 
   <div id="tabsEl" hidden></div>
@@ -296,47 +273,6 @@
   // ---------- Calendar resolution (real service on a given date) ----------
 
   const WEEKDAY_FIELDS = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
-  const WEEKDAY_LABELS_PT = ['Domingo','Segunda-feira','Ter\u00e7a-feira','Quarta-feira','Quinta-feira','Sexta-feira','S\u00e1bado'];
-
-  function buildServiceIndex(calendarRows, calendarDatesRows){
-    const calByService = new Map();
-    (calendarRows || []).forEach(r => { if (r.service_id !== undefined) calByService.set(r.service_id, r); });
-    const exceptionsByService = new Map();
-    (calendarDatesRows || []).forEach(r => {
-      if (r.service_id === undefined) return;
-      if (!exceptionsByService.has(r.service_id)) exceptionsByService.set(r.service_id, new Map());
-      exceptionsByService.get(r.service_id).set(r.date, r.exception_type);
-    });
-    return { calByService, exceptionsByService };
-  }
-
-  function isServiceActive(idx, serviceId, dateStr, weekdayField){
-    let active = false;
-    const cal = idx.calByService.get(serviceId);
-    if (cal && cal.start_date && cal.end_date && dateStr >= cal.start_date && dateStr <= cal.end_date && cal[weekdayField] === '1'){
-      active = true;
-    }
-    const exMap = idx.exceptionsByService.get(serviceId);
-    if (exMap && exMap.has(dateStr)){
-      const type = exMap.get(dateStr);
-      if (type === '1') active = true;
-      else if (type === '2') active = false;
-    }
-    return active;
-  }
-
-  function getActiveTripsForDate(tripsRows, serviceIndex, dateStr, weekdayField){
-    const allServiceIds = new Set([...serviceIndex.calByService.keys(), ...serviceIndex.exceptionsByService.keys()]);
-    const activeServices = new Set();
-    for (const sid of allServiceIds){
-      if (isServiceActive(serviceIndex, sid, dateStr, weekdayField)) activeServices.add(sid);
-    }
-    const activeTrips = new Map();
-    (tripsRows || []).forEach(r => {
-      if (r.trip_id !== undefined && activeServices.has(r.service_id)) activeTrips.set(r.trip_id, r);
-    });
-    return activeTrips;
-  }
 
   // ---------- Feed period banner ----------
 
@@ -768,116 +704,131 @@
     if (results.length) selectTab(results[0].filename);
   }
 
-  // ---------- Date-based service comparison ----------
+  // ---------- Excel export (focado nas categorias mais relevantes) ----------
 
-  let dateCompareCtx = null; // { serviceIndexOld, serviceIndexNew, tripsOld, tripsNew, tripsDiff }
+  let lastOldData = null, lastNewData = null;
 
-  function initDateCompare(oldData, newData, results){
-    const wrap = document.getElementById('dateCompare');
-    const tripsOld = (oldData['trips.txt'] || {}).rows || [];
-    const tripsNew = (newData['trips.txt'] || {}).rows || [];
-    if (!tripsOld.length && !tripsNew.length){ wrap.hidden = true; dateCompareCtx = null; return; }
+  function buildExcelReport(oldData, newData, results){
+    const wb = XLSX.utils.book_new();
 
-    const serviceIndexOld = buildServiceIndex((oldData['calendar.txt']||{}).rows, (oldData['calendar_dates.txt']||{}).rows);
-    const serviceIndexNew = buildServiceIndex((newData['calendar.txt']||{}).rows, (newData['calendar_dates.txt']||{}).rows);
-    const tripsDiffResult = results.find(r => r.filename === 'trips.txt');
-
-    dateCompareCtx = {
-      serviceIndexOld, serviceIndexNew, tripsOld, tripsNew,
-      tripsDiff: tripsDiffResult ? tripsDiffResult.diff : { added: [], removed: [], modified: [], renamed: [] },
-    };
-
-    const newFeedInfo = ((newData['feed_info.txt']||{}).rows || [])[0];
-    const oldFeedInfo = ((oldData['feed_info.txt']||{}).rows || [])[0];
-    let defaultDate = (newFeedInfo && newFeedInfo.feed_start_date) || (oldFeedInfo && oldFeedInfo.feed_start_date) || '';
-    const dateInput = document.getElementById('dateInput');
-    if (defaultDate && defaultDate.length === 8){
-      dateInput.value = `${defaultDate.slice(0,4)}-${defaultDate.slice(4,6)}-${defaultDate.slice(6,8)}`;
-    } else {
-      const t = new Date();
-      dateInput.value = t.toISOString().slice(0,10);
-    }
-
-    wrap.hidden = false;
-    updateDateCompare();
-  }
-
-  function updateDateCompare(){
-    if (!dateCompareCtx) return;
-    const val = document.getElementById('dateInput').value;
-    if (!val) return;
-    const [y, m, d] = val.split('-').map(Number);
-    const dateStr = val.replace(/-/g, '');
-    const weekdayIdx = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
-    const weekdayField = WEEKDAY_FIELDS[weekdayIdx];
-
-    document.getElementById('dateCompareInfo').textContent = `${WEEKDAY_LABELS_PT[weekdayIdx]} \u00b7 ${formatGtfsDate(dateStr)}`;
-
-    const { serviceIndexOld, serviceIndexNew, tripsOld, tripsNew, tripsDiff } = dateCompareCtx;
-    const activeOld = getActiveTripsForDate(tripsOld, serviceIndexOld, dateStr, weekdayField);
-    const activeNew = getActiveTripsForDate(tripsNew, serviceIndexNew, dateStr, weekdayField);
-
-    const removed = tripsDiff.removed.filter(it => activeOld.has(it.key));
-    const added = tripsDiff.added.filter(it => activeNew.has(it.key));
-    const modified = tripsDiff.modified.filter(it => activeNew.has(it.key) || activeOld.has(it.key));
-    const renamed = (tripsDiff.renamed || []).filter(it => activeOld.has(it.oldKey) || activeNew.has(it.newKey));
-
-    const modifiedKeys = new Set(modified.map(i => i.key));
-    let unchanged = 0;
-    activeNew.forEach((row, tid) => {
-      if (activeOld.has(tid) && !modifiedKeys.has(tid)) unchanged++;
-    });
-
-    renderDateCompareResults({ added, removed, modified, renamed, unchanged, activeOldCount: activeOld.size, activeNewCount: activeNew.size });
-  }
-
-  function renderDateCompareResults(r){
-    document.getElementById('dateCompareCounters').innerHTML = `
-      <div class="counter small"><div class="num">${fmt(r.activeOldCount)}</div><div class="lbl">Ativas antigo</div></div>
-      <div class="counter small"><div class="num">${fmt(r.activeNewCount)}</div><div class="lbl">Ativas novo</div></div>
-      <div class="counter small renamed"><div class="num">${fmt(r.renamed.length)}</div><div class="lbl">Correspond\u00eancias prov\u00e1veis</div></div>
-      <div class="counter small added"><div class="num">${fmt(r.added.length)}</div><div class="lbl">Novas neste dia</div></div>
-      <div class="counter small removed"><div class="num">${fmt(r.removed.length)}</div><div class="lbl">Deixam de correr</div></div>
-      <div class="counter small modified"><div class="num">${fmt(r.modified.length)}</div><div class="lbl">Alteradas</div></div>
-    `;
-
-    const panel = document.getElementById('dateComparePanel');
-    panel.innerHTML = '';
-    const sections = [
-      { key: 'renamed',  label: 'Prov\u00e1veis correspond\u00eancias (ID mudou)',  cls: 'renamed',  items: r.renamed },
-      { key: 'added',    label: 'Viagens novas neste dia',                          cls: 'added',    items: r.added },
-      { key: 'removed',  label: 'Viagens que deixam de correr neste dia',           cls: 'removed',  items: r.removed },
-      { key: 'modified', label: 'Viagens alteradas',                                cls: 'modified', items: r.modified },
+    // Resumo — números-chave de um relance, para confirmar rapidamente o que mudou
+    const byFile = name => results.find(r => r.filename === name);
+    const routesResult0 = byFile('routes.txt');
+    const stopsResult0 = byFile('stops.txt');
+    const tripsResult0 = byFile('trips.txt');
+    const stResult0 = byFile('stop_times.txt');
+    const calResult0 = byFile('calendar.txt');
+    const calDatesResult0 = byFile('calendar_dates.txt');
+    const n = (r, key) => r ? (key === 'renamed' ? (r.diff.renamed || []).length : r.diff[key].length) : 0;
+    const summaryRows = [
+      { categoria: 'Linhas removidas', quantidade: n(routesResult0, 'removed') },
+      { categoria: 'Linhas alteradas', quantidade: n(routesResult0, 'modified') },
+      { categoria: 'Paragens adicionadas', quantidade: n(stopsResult0, 'added') },
+      { categoria: 'Paragens removidas', quantidade: n(stopsResult0, 'removed') },
+      { categoria: 'Viagens adicionadas', quantidade: n(tripsResult0, 'added') },
+      { categoria: 'Viagens removidas', quantidade: n(tripsResult0, 'removed') },
+      { categoria: 'Viagens - prováveis correspondências (só ID mudou)', quantidade: n(tripsResult0, 'renamed') },
+      { categoria: 'Viagens com horário alterado', quantidade: n(stResult0, 'modified') },
+      { categoria: 'Serviços de calendário novos', quantidade: n(calResult0, 'added') },
+      { categoria: 'Serviços de calendário removidos', quantidade: n(calResult0, 'removed') },
+      { categoria: 'Exceções de calendário novas (total)', quantidade: n(calDatesResult0, 'added') },
+      { categoria: 'Exceções de calendário removidas (total)', quantidade: n(calDatesResult0, 'removed') },
     ];
-    let anyShown = false;
-    sections.forEach(sec => {
-      if (!sec.items.length) return;
-      anyShown = true;
-      const secEl = document.createElement('div');
-      secEl.className = `diff-section ${sec.cls}`;
-      secEl.innerHTML = `
-        <div class="section-header">
-          <span class="section-title">${sec.label}</span>
-          <span class="section-count">${fmt(sec.items.length)}</span>
-        </div>
-        <div class="list-container"></div>
-      `;
-      panel.appendChild(secEl);
-      const renderFn = getItemRenderer('entity', sec.key);
-      renderPaginatedList(secEl.querySelector('.list-container'), sec.items, renderFn);
-    });
-    if (r.unchanged){
-      panel.insertAdjacentHTML('beforeend', `<div class="unchanged-note">${fmt(r.unchanged)} viagens sem altera\u00e7\u00f5es neste dia.</div>`);
-      anyShown = true;
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(summaryRows), 'Resumo');
+
+    // Linhas removidas
+    const routesResult = results.find(r => r.filename === 'routes.txt');
+    if (routesResult && routesResult.diff.removed.length){
+      const rows = routesResult.diff.removed.map(it => ({
+        route_id: it.key,
+        nome_curto: it.row.route_short_name || '',
+        nome_longo: it.row.route_long_name || '',
+        agencia: it.row.agency_id || '',
+      }));
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Linhas removidas');
     }
-    if (!anyShown){
-      panel.insertAdjacentHTML('beforeend', '<div class="empty-note">Sem viagens ativas nesta data em nenhum dos feeds.</div>');
+
+    // Horários alterados (viagens cujos stop_times mudaram)
+    const stResult = results.find(r => r.filename === 'stop_times.txt');
+    if (stResult && stResult.diff.modified.length){
+      const oldTripsById = new Map(((oldData['trips.txt']||{}).rows || []).map(r => [r.trip_id, r]));
+      const newTripsById = new Map(((newData['trips.txt']||{}).rows || []).map(r => [r.trip_id, r]));
+      const oldFirstDep = buildFirstDeparture((oldData['stop_times.txt']||{}).rows || []);
+      const newFirstDep = buildFirstDeparture((newData['stop_times.txt']||{}).rows || []);
+      const rows = stResult.diff.modified.map(it => {
+        const tripRow = newTripsById.get(it.key) || oldTripsById.get(it.key) || {};
+        return {
+          trip_id: it.key,
+          linha: tripRow.route_id || '',
+          destino: tripRow.trip_headsign || '',
+          direcao: tripRow.direction_id || '',
+          partida_antiga: oldFirstDep.get(it.key) || '',
+          partida_nova: newFirstDep.get(it.key) || '',
+          paragens_antigo: it.oldCount,
+          paragens_novo: it.newCount,
+        };
+      });
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Horários alterados');
     }
+
+    // Paragens adicionadas / removidas
+    const stopsResult = results.find(r => r.filename === 'stops.txt');
+    if (stopsResult){
+      if (stopsResult.diff.added.length){
+        const rows = stopsResult.diff.added.map(it => ({
+          stop_id: it.key, nome: it.row.stop_name || '', lat: it.row.stop_lat || '', lon: it.row.stop_lon || '',
+        }));
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Paragens adicionadas');
+      }
+      if (stopsResult.diff.removed.length){
+        const rows = stopsResult.diff.removed.map(it => ({
+          stop_id: it.key, nome: it.row.stop_name || '', lat: it.row.stop_lat || '', lon: it.row.stop_lon || '',
+        }));
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Paragens removidas');
+      }
+    }
+
+    // Calendário: novidades — resumido por service_id (evita milhares de linhas
+    // quando um feed introduz muitos padrões novos, cada um com muitas exceções)
+    const calResult = results.find(r => r.filename === 'calendar.txt');
+    const calDatesResult = results.find(r => r.filename === 'calendar_dates.txt');
+    const diasDe = row => WEEKDAY_FIELDS.filter(f => row[f] === '1').map(f => f.slice(0,3)).join('/');
+    const calEntry = new Map();
+    const ensureEntry = sid => {
+      if (!calEntry.has(sid)) calEntry.set(sid, { service_id: sid, estado: '(sem alteração ao padrão semanal)', dias: '', periodo: '', excecoes_novas: 0, excecoes_removidas: 0 });
+      return calEntry.get(sid);
+    };
+    if (calResult){
+      calResult.diff.added.forEach(it => {
+        const e = ensureEntry(it.key);
+        e.estado = 'Serviço novo'; e.dias = diasDe(it.row);
+        e.periodo = `${formatGtfsDate(it.row.start_date)} - ${formatGtfsDate(it.row.end_date)}`;
+      });
+      calResult.diff.removed.forEach(it => {
+        const e = ensureEntry(it.key);
+        e.estado = 'Serviço removido'; e.dias = diasDe(it.row);
+        e.periodo = `${formatGtfsDate(it.row.start_date)} - ${formatGtfsDate(it.row.end_date)}`;
+      });
+    }
+    if (calDatesResult){
+      calDatesResult.diff.added.forEach(it => { ensureEntry(it.row.service_id).excecoes_novas++; });
+      calDatesResult.diff.removed.forEach(it => { ensureEntry(it.row.service_id).excecoes_removidas++; });
+    }
+    const calRows = [...calEntry.values()].sort((a, b) =>
+      (b.excecoes_novas + b.excecoes_removidas) - (a.excecoes_novas + a.excecoes_removidas)
+    );
+    if (calRows.length){
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(calRows), 'Calendário - novidades');
+    }
+
+    if (wb.SheetNames.length === 0){
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([{ info: 'Sem alterações nas categorias exportadas.' }]), 'Resumo');
+    }
+
+    XLSX.writeFile(wb, 'relatorio-gtfs.xlsx');
   }
 
-  document.getElementById('dateInput').addEventListener('change', updateDateCompare);
 
-  // ---------- File input wiring ----------
 
   let oldFile = null, newFile = null;
 
@@ -918,7 +869,8 @@
       await new Promise(r => setTimeout(r, 0));
       const results = computeAllDiffs(oldData, newData);
       renderResults(results);
-      initDateCompare(oldData, newData, results);
+      lastOldData = oldData;
+      lastNewData = newData;
       updateStatus('Comparação concluída.');
     } catch (err){
       console.error(err);
@@ -929,6 +881,11 @@
   });
 
   document.getElementById('resetBtn').addEventListener('click', () => location.reload());
+
+  document.getElementById('exportExcelBtn').addEventListener('click', () => {
+    if (!lastOldData || !lastNewData) return;
+    buildExcelReport(lastOldData, lastNewData, gtfsResults);
+  });
 
   document.getElementById('exportBtn').addEventListener('click', () => {
     const report = gtfsResults.map(r => ({
