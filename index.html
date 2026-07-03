@@ -96,12 +96,27 @@
   .counter.modified .num{ color: var(--amber); }
   .counter.renamed .num{ color: var(--teal); }
   .counter .lbl{ font-size: 12.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; margin-top:4px; }
+  .feed-banner{ background: rgba(255,177,0,.08); border:1px solid rgba(255,177,0,.35); color: var(--text); border-radius:8px; padding:12px 16px; font-family: var(--mono); font-size:13px; line-height:1.7; margin-bottom:16px; }
+  .feed-banner b{ color: var(--amber); }
   #fileNotes{ display:flex; flex-direction:column; gap:6px; }
   .file-note{ font-size: 13px; font-family: var(--mono); padding: 8px 12px; border-radius:6px; border:1px solid var(--border); }
   .file-note.added{ color: var(--green); border-color: rgba(52,209,124,.35); }
   .file-note.removed{ color: var(--red); border-color: rgba(255,107,107,.35); }
 
   #exportRow{ display:flex; justify-content:flex-end; margin: 6px 0 18px; }
+
+  #dateCompare{ background: var(--panel); border:1px solid var(--border); border-radius:10px; padding:18px 20px; margin: 0 0 26px; }
+  .date-compare-header{ display:flex; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:14px; }
+  .date-compare-title{ font-family: var(--mono); font-weight:600; font-size:14px; color: var(--text); }
+  .date-compare-sub{ width:100%; color: var(--muted); font-size:12.5px; margin:-8px 0 4px; }
+  #dateInput{ background: var(--bg); border:1px solid var(--border); color: var(--text); font-family: var(--sans); font-size:13.5px; padding:7px 10px; border-radius:6px; }
+  #dateInput:focus-visible{ outline:2px solid var(--amber); outline-offset:2px; }
+  .date-compare-info{ font-family: var(--mono); font-size:12.5px; color: var(--muted); }
+  .counters.small{ grid-template-columns: repeat(6, 1fr); margin-bottom: 16px; gap: 10px; }
+  .counter.small{ padding: 12px 10px; }
+  .counter.small .num{ font-size: 21px; }
+  .counter.small .lbl{ font-size: 10px; line-height:1.3; }
+  @media (max-width: 780px){ .counters.small{ grid-template-columns: repeat(3, 1fr); } }
 
   #tabsEl{ display:flex; gap:6px; overflow-x:auto; padding-bottom: 4px; border-bottom: 1px solid var(--border); margin-bottom: 18px; }
   .tab-btn{
@@ -194,6 +209,7 @@
   </div>
 
   <div id="dashboard" hidden>
+    <div id="feedBanner"></div>
     <div class="counters">
       <div class="counter renamed"><div class="num" id="countRenamed">0</div><div class="lbl">Prováveis correspondências</div></div>
       <div class="counter added"><div class="num" id="countAdded">0</div><div class="lbl">Adicionados</div></div>
@@ -202,6 +218,17 @@
     </div>
     <div id="fileNotes"></div>
     <div id="exportRow"><button class="secondary" id="exportBtn">Exportar relatório (JSON)</button></div>
+  </div>
+
+  <div id="dateCompare" hidden>
+    <div class="date-compare-header">
+      <span class="date-compare-title">Serviço efetivo numa data específica</span>
+      <input type="date" id="dateInput">
+      <span class="date-compare-info" id="dateCompareInfo"></span>
+    </div>
+    <p class="date-compare-sub">Resolve calendar.txt + calendar_dates.txt para saber exatamente que viagens correm nesta data em cada feed — apanha exceções de calendário que não aparecem nos diffs ficheiro-a-ficheiro.</p>
+    <div class="counters small" id="dateCompareCounters"></div>
+    <div id="dateComparePanel"></div>
   </div>
 
   <div id="tabsEl" hidden></div>
@@ -259,6 +286,74 @@
       if (row && row[f]) return row[f];
     }
     return '';
+  }
+
+  function formatGtfsDate(d){
+    if (!d || d.length !== 8) return d || '\u2014';
+    return `${d.slice(6,8)}/${d.slice(4,6)}/${d.slice(0,4)}`;
+  }
+
+  // ---------- Calendar resolution (real service on a given date) ----------
+
+  const WEEKDAY_FIELDS = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+  const WEEKDAY_LABELS_PT = ['Domingo','Segunda-feira','Ter\u00e7a-feira','Quarta-feira','Quinta-feira','Sexta-feira','S\u00e1bado'];
+
+  function buildServiceIndex(calendarRows, calendarDatesRows){
+    const calByService = new Map();
+    (calendarRows || []).forEach(r => { if (r.service_id !== undefined) calByService.set(r.service_id, r); });
+    const exceptionsByService = new Map();
+    (calendarDatesRows || []).forEach(r => {
+      if (r.service_id === undefined) return;
+      if (!exceptionsByService.has(r.service_id)) exceptionsByService.set(r.service_id, new Map());
+      exceptionsByService.get(r.service_id).set(r.date, r.exception_type);
+    });
+    return { calByService, exceptionsByService };
+  }
+
+  function isServiceActive(idx, serviceId, dateStr, weekdayField){
+    let active = false;
+    const cal = idx.calByService.get(serviceId);
+    if (cal && cal.start_date && cal.end_date && dateStr >= cal.start_date && dateStr <= cal.end_date && cal[weekdayField] === '1'){
+      active = true;
+    }
+    const exMap = idx.exceptionsByService.get(serviceId);
+    if (exMap && exMap.has(dateStr)){
+      const type = exMap.get(dateStr);
+      if (type === '1') active = true;
+      else if (type === '2') active = false;
+    }
+    return active;
+  }
+
+  function getActiveTripsForDate(tripsRows, serviceIndex, dateStr, weekdayField){
+    const allServiceIds = new Set([...serviceIndex.calByService.keys(), ...serviceIndex.exceptionsByService.keys()]);
+    const activeServices = new Set();
+    for (const sid of allServiceIds){
+      if (isServiceActive(serviceIndex, sid, dateStr, weekdayField)) activeServices.add(sid);
+    }
+    const activeTrips = new Map();
+    (tripsRows || []).forEach(r => {
+      if (r.trip_id !== undefined && activeServices.has(r.service_id)) activeTrips.set(r.trip_id, r);
+    });
+    return activeTrips;
+  }
+
+  // ---------- Feed period banner ----------
+
+  function renderFeedBanner(results){
+    const banner = document.getElementById('feedBanner');
+    const feedResult = results.find(r => r.filename === 'feed_info.txt');
+    const mod = feedResult && feedResult.diff.modified[0];
+    if (!mod){ banner.innerHTML = ''; return; }
+    const oldRow = mod.old, newRow = mod.new;
+    const lines = [];
+    if ((oldRow.feed_start_date || '') !== (newRow.feed_start_date || '') || (oldRow.feed_end_date || '') !== (newRow.feed_end_date || '')){
+      lines.push(`Per\u00edodo do feed: <b>${esc(formatGtfsDate(oldRow.feed_start_date))} \u2013 ${esc(formatGtfsDate(oldRow.feed_end_date))}</b> &#8594; <b>${esc(formatGtfsDate(newRow.feed_start_date))} \u2013 ${esc(formatGtfsDate(newRow.feed_end_date))}</b>`);
+    }
+    if ((oldRow.feed_version || '') !== (newRow.feed_version || '')){
+      lines.push(`Vers\u00e3o do feed: <b>${esc(oldRow.feed_version || '\u2014')}</b> &#8594; <b>${esc(newRow.feed_version || '\u2014')}</b>`);
+    }
+    banner.innerHTML = lines.length ? `<div class="feed-banner">${lines.join('<br>')}</div>` : '';
   }
 
   // ---------- Parsing ----------
@@ -667,10 +762,120 @@
 
   function renderResults(results){
     gtfsResults = results;
+    renderFeedBanner(results);
     renderSummary(results);
     renderTabs(results);
     if (results.length) selectTab(results[0].filename);
   }
+
+  // ---------- Date-based service comparison ----------
+
+  let dateCompareCtx = null; // { serviceIndexOld, serviceIndexNew, tripsOld, tripsNew, tripsDiff }
+
+  function initDateCompare(oldData, newData, results){
+    const wrap = document.getElementById('dateCompare');
+    const tripsOld = (oldData['trips.txt'] || {}).rows || [];
+    const tripsNew = (newData['trips.txt'] || {}).rows || [];
+    if (!tripsOld.length && !tripsNew.length){ wrap.hidden = true; dateCompareCtx = null; return; }
+
+    const serviceIndexOld = buildServiceIndex((oldData['calendar.txt']||{}).rows, (oldData['calendar_dates.txt']||{}).rows);
+    const serviceIndexNew = buildServiceIndex((newData['calendar.txt']||{}).rows, (newData['calendar_dates.txt']||{}).rows);
+    const tripsDiffResult = results.find(r => r.filename === 'trips.txt');
+
+    dateCompareCtx = {
+      serviceIndexOld, serviceIndexNew, tripsOld, tripsNew,
+      tripsDiff: tripsDiffResult ? tripsDiffResult.diff : { added: [], removed: [], modified: [], renamed: [] },
+    };
+
+    const newFeedInfo = ((newData['feed_info.txt']||{}).rows || [])[0];
+    const oldFeedInfo = ((oldData['feed_info.txt']||{}).rows || [])[0];
+    let defaultDate = (newFeedInfo && newFeedInfo.feed_start_date) || (oldFeedInfo && oldFeedInfo.feed_start_date) || '';
+    const dateInput = document.getElementById('dateInput');
+    if (defaultDate && defaultDate.length === 8){
+      dateInput.value = `${defaultDate.slice(0,4)}-${defaultDate.slice(4,6)}-${defaultDate.slice(6,8)}`;
+    } else {
+      const t = new Date();
+      dateInput.value = t.toISOString().slice(0,10);
+    }
+
+    wrap.hidden = false;
+    updateDateCompare();
+  }
+
+  function updateDateCompare(){
+    if (!dateCompareCtx) return;
+    const val = document.getElementById('dateInput').value;
+    if (!val) return;
+    const [y, m, d] = val.split('-').map(Number);
+    const dateStr = val.replace(/-/g, '');
+    const weekdayIdx = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+    const weekdayField = WEEKDAY_FIELDS[weekdayIdx];
+
+    document.getElementById('dateCompareInfo').textContent = `${WEEKDAY_LABELS_PT[weekdayIdx]} \u00b7 ${formatGtfsDate(dateStr)}`;
+
+    const { serviceIndexOld, serviceIndexNew, tripsOld, tripsNew, tripsDiff } = dateCompareCtx;
+    const activeOld = getActiveTripsForDate(tripsOld, serviceIndexOld, dateStr, weekdayField);
+    const activeNew = getActiveTripsForDate(tripsNew, serviceIndexNew, dateStr, weekdayField);
+
+    const removed = tripsDiff.removed.filter(it => activeOld.has(it.key));
+    const added = tripsDiff.added.filter(it => activeNew.has(it.key));
+    const modified = tripsDiff.modified.filter(it => activeNew.has(it.key) || activeOld.has(it.key));
+    const renamed = (tripsDiff.renamed || []).filter(it => activeOld.has(it.oldKey) || activeNew.has(it.newKey));
+
+    const modifiedKeys = new Set(modified.map(i => i.key));
+    let unchanged = 0;
+    activeNew.forEach((row, tid) => {
+      if (activeOld.has(tid) && !modifiedKeys.has(tid)) unchanged++;
+    });
+
+    renderDateCompareResults({ added, removed, modified, renamed, unchanged, activeOldCount: activeOld.size, activeNewCount: activeNew.size });
+  }
+
+  function renderDateCompareResults(r){
+    document.getElementById('dateCompareCounters').innerHTML = `
+      <div class="counter small"><div class="num">${fmt(r.activeOldCount)}</div><div class="lbl">Ativas antigo</div></div>
+      <div class="counter small"><div class="num">${fmt(r.activeNewCount)}</div><div class="lbl">Ativas novo</div></div>
+      <div class="counter small renamed"><div class="num">${fmt(r.renamed.length)}</div><div class="lbl">Correspond\u00eancias prov\u00e1veis</div></div>
+      <div class="counter small added"><div class="num">${fmt(r.added.length)}</div><div class="lbl">Novas neste dia</div></div>
+      <div class="counter small removed"><div class="num">${fmt(r.removed.length)}</div><div class="lbl">Deixam de correr</div></div>
+      <div class="counter small modified"><div class="num">${fmt(r.modified.length)}</div><div class="lbl">Alteradas</div></div>
+    `;
+
+    const panel = document.getElementById('dateComparePanel');
+    panel.innerHTML = '';
+    const sections = [
+      { key: 'renamed',  label: 'Prov\u00e1veis correspond\u00eancias (ID mudou)',  cls: 'renamed',  items: r.renamed },
+      { key: 'added',    label: 'Viagens novas neste dia',                          cls: 'added',    items: r.added },
+      { key: 'removed',  label: 'Viagens que deixam de correr neste dia',           cls: 'removed',  items: r.removed },
+      { key: 'modified', label: 'Viagens alteradas',                                cls: 'modified', items: r.modified },
+    ];
+    let anyShown = false;
+    sections.forEach(sec => {
+      if (!sec.items.length) return;
+      anyShown = true;
+      const secEl = document.createElement('div');
+      secEl.className = `diff-section ${sec.cls}`;
+      secEl.innerHTML = `
+        <div class="section-header">
+          <span class="section-title">${sec.label}</span>
+          <span class="section-count">${fmt(sec.items.length)}</span>
+        </div>
+        <div class="list-container"></div>
+      `;
+      panel.appendChild(secEl);
+      const renderFn = getItemRenderer('entity', sec.key);
+      renderPaginatedList(secEl.querySelector('.list-container'), sec.items, renderFn);
+    });
+    if (r.unchanged){
+      panel.insertAdjacentHTML('beforeend', `<div class="unchanged-note">${fmt(r.unchanged)} viagens sem altera\u00e7\u00f5es neste dia.</div>`);
+      anyShown = true;
+    }
+    if (!anyShown){
+      panel.insertAdjacentHTML('beforeend', '<div class="empty-note">Sem viagens ativas nesta data em nenhum dos feeds.</div>');
+    }
+  }
+
+  document.getElementById('dateInput').addEventListener('change', updateDateCompare);
 
   // ---------- File input wiring ----------
 
@@ -713,6 +918,7 @@
       await new Promise(r => setTimeout(r, 0));
       const results = computeAllDiffs(oldData, newData);
       renderResults(results);
+      initDateCompare(oldData, newData, results);
       updateStatus('Comparação concluída.');
     } catch (err){
       console.error(err);
