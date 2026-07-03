@@ -429,17 +429,20 @@
       const dn = normalizeName(d.stop_name);
       const dlat = parseFloat(d.stop_lat), dlon = parseFloat(d.stop_lon);
       if (!dn || isNaN(dlat) || isNaN(dlon)) return;
-      let best = null, bestDist = null;
+      const candidates = [];
       for (const n of unmatchedNosso){
         if (normalizeName(n.stop_name) !== dn) continue;
         const nlat = parseFloat(n.stop_lat), nlon = parseFloat(n.stop_lon);
         if (isNaN(nlat) || isNaN(nlon)) continue;
         const dist = haversineMeters(dlat, dlon, nlat, nlon);
-        if (dist <= STOP_MATCH_MAX_DIST_M && (bestDist === null || dist < bestDist)){ bestDist = dist; best = n; }
+        if (dist <= STOP_MATCH_MAX_DIST_M) candidates.push({ n, dist });
       }
-      if (best){
-        map.set(d.stop_id, best.stop_id);
-        unmatchedNosso.splice(unmatchedNosso.indexOf(best), 1);
+      // Se houver mais que 1 candidato com o mesmo nome perto (ex.: paragens
+      // em lados opostos da via, cada uma com o seu próprio ID), não
+      // arriscamos escolher "a mais próxima" — fica por corresponder.
+      if (candidates.length === 1){
+        map.set(d.stop_id, candidates[0].n.stop_id);
+        unmatchedNosso.splice(unmatchedNosso.indexOf(candidates[0].n), 1);
         viaFuzzy++;
       }
     });
