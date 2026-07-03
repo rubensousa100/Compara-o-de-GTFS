@@ -64,6 +64,8 @@
 
   .crosswalk-report{ background: var(--panel); border:1px solid var(--border); border-radius:10px; padding:18px 20px; margin: 0 0 22px; }
   .crosswalk-title{ font-family: var(--mono); font-weight:600; font-size:14px; margin-bottom:12px; color: var(--text); }
+  .crosswalk-legend{ color: var(--muted); font-size: 12.5px; line-height:1.6; margin: -6px 0 16px; }
+  .crosswalk-legend b{ color: var(--text); }
   .crosswalk-rows{ display:flex; flex-direction:column; gap:8px; margin-bottom: 12px; }
   .crosswalk-row{ display:flex; align-items:center; gap:10px; font-size:13.5px; }
   .crosswalk-row .cw-label{ width: 130px; flex-shrink:0; color: var(--muted); }
@@ -714,6 +716,7 @@
     el.innerHTML = `
       <div class="crosswalk-report">
         <div class="crosswalk-title">Relatório de correspondência (nosso &#8596; operador)</div>
+        <p class="crosswalk-legend">O nosso GTFS é sempre a referência; o do operador é o que está a ser validado. Em cada aba: <b>"só no operador"</b> = eles têm, nós não encontrámos correspondência &middot; <b>"só no nosso"</b> = temos, o operador não enviou (ou não correspondeu).</p>
         <div class="crosswalk-rows">${rowsHtml}</div>
         <div class="crosswalk-notes">${notesHtml}</div>
       </div>
@@ -1147,6 +1150,31 @@
     </div>`;
   }
 
+  // Palavra de entidade para compor rótulos legíveis por ficheiro.
+  const ENTITY_WORD = {
+    'routes.txt': 'linhas', 'stops.txt': 'paragens', 'trips.txt': 'viagens',
+    'calendar.txt': 'calendários', 'calendar_dates.txt': 'exceções',
+    'stop_times.txt': 'viagens', 'shapes.txt': 'traçados', 'agency.txt': 'agências',
+    'frequencies.txt': 'frequências', 'transfers.txt': 'transbordos', 'feed_info.txt': 'registos',
+  };
+
+  // No modo "Operador externo", "adicionado/removido" é ambíguo (adicionado
+  // em relação a quê?). Aqui explicitamos sempre a direção: o nosso GTFS é
+  // sempre a referência, o do operador é o que está a ser validado.
+  function getSectionLabel(key, filename){
+    const word = ENTITY_WORD[filename] || 'registos';
+    if (comparisonMode === 'externa'){
+      if (key === 'added')    return `Só no GTFS do operador — ${word} que faltam no nosso (ou não foi possível corresponder)`;
+      if (key === 'removed')  return `Só no nosso GTFS — ${word} que o operador não enviou (ou não foi possível corresponder)`;
+      if (key === 'modified') return `Correspondidas, mas com diferenças`;
+      if (key === 'renamed')  return `Prováveis correspondências (ID diferente, conteúdo igual)`;
+    }
+    if (key === 'added')    return 'Adicionados';
+    if (key === 'removed')  return 'Removidos';
+    if (key === 'modified') return 'Alterados';
+    return 'Prováveis correspondências (ID mudou)';
+  }
+
   function selectTab(filename){
     document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.filename === filename));
     const result = gtfsResults.find(r => r.filename === filename);
@@ -1158,13 +1186,22 @@
     }
 
     if (result.onlyOld){
-      panel.insertAdjacentHTML('beforeend', '<div class="file-banner removed">Este ficheiro só existe no GTFS antigo — foi removido no novo feed.</div>');
+      const msg = comparisonMode === 'externa'
+        ? 'Este ficheiro só existe no nosso GTFS — o operador não o incluiu.'
+        : 'Este ficheiro só existe no GTFS antigo — foi removido no novo feed.';
+      panel.insertAdjacentHTML('beforeend', `<div class="file-banner removed">${msg}</div>`);
     } else if (result.onlyNew){
-      panel.insertAdjacentHTML('beforeend', '<div class="file-banner added">Este ficheiro é novo — não existia no GTFS antigo.</div>');
+      const msg = comparisonMode === 'externa'
+        ? 'Este ficheiro só existe no GTFS do operador — não temos equivalente.'
+        : 'Este ficheiro é novo — não existia no GTFS antigo.';
+      panel.insertAdjacentHTML('beforeend', `<div class="file-banner added">${msg}</div>`);
     }
 
     if ((result.diff.renamed || []).length){
-      panel.insertAdjacentHTML('beforeend', '<div class="file-banner renamed-banner">Estas viagens têm um ID totalmente diferente, mas parecem ser a mesma viagem física (mesma linha, direção, destino e hora de partida) — provavelmente só o código de calendário mudou. Correspondência automática por heurística: confirma sempre antes de assumir.</div>');
+      const msg = comparisonMode === 'externa'
+        ? 'Estas viagens não têm o mesmo trip_id, mas parecem ser a mesma viagem física (mesma linha, direção e hora de partida) — normal quando o operador usa a sua própria numeração. Correspondência automática por heurística: confirma sempre antes de assumir.'
+        : 'Estas viagens têm um ID totalmente diferente, mas parecem ser a mesma viagem física (mesma linha, direção, destino e hora de partida) — provavelmente só o código de calendário mudou. Correspondência automática por heurística: confirma sempre antes de assumir.';
+      panel.insertAdjacentHTML('beforeend', `<div class="file-banner renamed-banner">${msg}</div>`);
     }
 
     if (filename === 'trips.txt' || filename === 'stop_times.txt'){
@@ -1173,10 +1210,10 @@
     }
 
     const sections = [
-      { key: 'renamed',  label: 'Prováveis correspondências (ID mudou)', cls: 'renamed',  items: result.diff.renamed || [] },
-      { key: 'added',    label: 'Adicionados', cls: 'added',    items: result.diff.added },
-      { key: 'removed',  label: 'Removidos',   cls: 'removed',  items: result.diff.removed },
-      { key: 'modified', label: 'Alterados',   cls: 'modified', items: result.diff.modified },
+      { key: 'renamed',  label: getSectionLabel('renamed', filename),  cls: 'renamed',  items: result.diff.renamed || [] },
+      { key: 'added',    label: getSectionLabel('added', filename),    cls: 'added',    items: result.diff.added },
+      { key: 'removed',  label: getSectionLabel('removed', filename),  cls: 'removed',  items: result.diff.removed },
+      { key: 'modified', label: getSectionLabel('modified', filename), cls: 'modified', items: result.diff.modified },
     ];
 
     let anyShown = false;
@@ -1234,6 +1271,16 @@
 
   function buildExcelReport(oldData, newData, results){
     const wb = XLSX.utils.book_new();
+    const isExterna = comparisonMode === 'externa';
+    // No modo externo, "removido/adicionado" é ambíguo — explicitamos a
+    // direção (nosso GTFS = referência, operador = o que está a ser validado).
+    const LBL = {
+      linhasRemovidas:      isExterna ? 'Linhas só no nosso GTFS'        : 'Linhas removidas',
+      paragensAdicionadas:  isExterna ? 'Paragens só no operador'        : 'Paragens adicionadas',
+      paragensRemovidas:    isExterna ? 'Paragens só no nosso GTFS'      : 'Paragens removidas',
+      viagensAdicionadas:   isExterna ? 'Viagens só no operador'         : 'Viagens adicionadas',
+      viagensRemovidas:     isExterna ? 'Viagens só no nosso GTFS'       : 'Viagens removidas',
+    };
 
     // Resumo — números-chave de um relance, para confirmar rapidamente o que mudou
     const byFile = name => results.find(r => r.filename === name);
@@ -1245,12 +1292,12 @@
     const calDatesResult0 = byFile('calendar_dates.txt');
     const n = (r, key) => r ? (key === 'renamed' ? (r.diff.renamed || []).length : r.diff[key].length) : 0;
     const summaryRows = [
-      { categoria: 'Linhas removidas', quantidade: n(routesResult0, 'removed') },
-      { categoria: 'Linhas alteradas', quantidade: n(routesResult0, 'modified') },
-      { categoria: 'Paragens adicionadas', quantidade: n(stopsResult0, 'added') },
-      { categoria: 'Paragens removidas', quantidade: n(stopsResult0, 'removed') },
-      { categoria: 'Viagens adicionadas', quantidade: n(tripsResult0, 'added') },
-      { categoria: 'Viagens removidas', quantidade: n(tripsResult0, 'removed') },
+      { categoria: LBL.linhasRemovidas, quantidade: n(routesResult0, 'removed') },
+      { categoria: 'Linhas correspondidas mas com diferenças', quantidade: n(routesResult0, 'modified') },
+      { categoria: LBL.paragensAdicionadas, quantidade: n(stopsResult0, 'added') },
+      { categoria: LBL.paragensRemovidas, quantidade: n(stopsResult0, 'removed') },
+      { categoria: LBL.viagensAdicionadas, quantidade: n(tripsResult0, 'added') },
+      { categoria: LBL.viagensRemovidas, quantidade: n(tripsResult0, 'removed') },
       { categoria: 'Viagens - prováveis correspondências (só ID mudou)', quantidade: n(tripsResult0, 'renamed') },
       { categoria: 'Viagens com horário alterado', quantidade: n(stResult0, 'modified') },
       { categoria: 'Serviços de calendário novos', quantidade: n(calResult0, 'added') },
@@ -1269,7 +1316,7 @@
         nome_longo: it.row.route_long_name || '',
         agencia: it.row.agency_id || '',
       }));
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Linhas removidas');
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), LBL.linhasRemovidas.slice(0, 31));
     }
 
     // Horários alterados (viagens cujos stop_times mudaram)
@@ -1295,20 +1342,20 @@
       XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Horários alterados');
     }
 
-    // Paragens adicionadas / removidas
+    // Paragens só num dos lados
     const stopsResult = results.find(r => r.filename === 'stops.txt');
     if (stopsResult){
       if (stopsResult.diff.added.length){
         const rows = stopsResult.diff.added.map(it => ({
           stop_id: it.key, nome: it.row.stop_name || '', lat: it.row.stop_lat || '', lon: it.row.stop_lon || '',
         }));
-        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Paragens adicionadas');
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), LBL.paragensAdicionadas.slice(0, 31));
       }
       if (stopsResult.diff.removed.length){
         const rows = stopsResult.diff.removed.map(it => ({
           stop_id: it.key, nome: it.row.stop_name || '', lat: it.row.stop_lat || '', lon: it.row.stop_lon || '',
         }));
-        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Paragens removidas');
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), LBL.paragensRemovidas.slice(0, 31));
       }
     }
 
