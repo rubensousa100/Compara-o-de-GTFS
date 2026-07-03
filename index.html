@@ -173,6 +173,25 @@
   .btn-more:hover{ border-color: var(--amber); }
   .empty-note, .unchanged-note{ color: var(--muted); font-size: 13px; font-family: var(--mono); padding: 14px; text-align:center; }
 
+  .tab-desc{ color: var(--muted); font-size: 13px; line-height:1.6; margin: 0 0 18px; padding: 11px 15px; background: var(--panel); border:1px solid var(--border); border-left: 3px solid var(--teal); border-radius: 0 6px 6px 0; max-width: 780px; }
+
+  .impact{ background: var(--panel); border:1px solid var(--border); border-radius:10px; padding: 16px 18px; margin: 0 0 20px; }
+  .impact-title{ font-family: var(--mono); font-weight:600; font-size:13px; color: var(--text); margin-bottom:12px; display:flex; align-items:center; gap:8px; }
+  .impact-title .hint{ color: var(--muted); font-weight:400; }
+  .impact-grid{ display:flex; flex-direction:column; gap:7px; }
+  .impact-row{ display:flex; align-items:center; gap:10px; font-size:13px; padding: 3px 6px; border-radius:5px; }
+  .impact-route{ font-family: var(--mono); font-weight:600; color: var(--text); width: 72px; flex-shrink:0; }
+  .impact-name{ color: var(--muted); flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .impact-bars{ display:flex; gap:3px; align-items:center; width: 200px; flex-shrink:0; justify-content:flex-end; }
+  .impact-chip{ font-family: var(--mono); font-size:11px; padding: 2px 7px; border-radius: 10px; white-space:nowrap; }
+  .impact-chip.added{ background: rgba(52,209,124,.14); color: var(--green); }
+  .impact-chip.removed{ background: rgba(255,107,107,.14); color: var(--red); }
+  .impact-chip.modified{ background: rgba(255,177,0,.14); color: var(--amber); }
+  .impact-empty{ color: var(--muted); font-size:12.5px; }
+
+  .initial-hint{ text-align:center; color: var(--muted); font-size:14px; padding: 48px 20px; font-family: var(--mono); }
+  .initial-hint svg{ display:block; margin: 0 auto 14px; opacity:.4; }
+
   footer.credits{ margin-top: 50px; color: var(--muted); font-size: 12.5px; text-align:center; }
 
   @media (max-width: 640px){
@@ -239,7 +258,12 @@
   </div>
 
   <div id="tabsEl" hidden></div>
-  <div id="panelEl"></div>
+  <div id="panelEl">
+    <div class="initial-hint" id="initialHint">
+      <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 3H5a2 2 0 0 0-2 2v4m6-6h10a2 2 0 0 1 2 2v4M9 3v18m0 0H5a2 2 0 0 1-2-2v-4m6 6h10a2 2 0 0 0 2-2v-4"/></svg>
+      Escolhe os dois ficheiros GTFS acima e clica em "Comparar GTFS".
+    </div>
+  </div>
 
   <footer class="credits">Ferramenta local de comparação de GTFS &middot; stop_times e shapes são comparados por assinatura agregada (por viagem / por traçado) para lidar com feeds grandes.</footer>
 </div>
@@ -273,6 +297,27 @@
   };
 
   const PRIORITY_ORDER = ['routes.txt','trips.txt','stops.txt','calendar.txt','calendar_dates.txt','stop_times.txt','shapes.txt','frequencies.txt','agency.txt','fare_attributes.txt','fare_rules.txt','transfers.txt','feed_info.txt'];
+
+  // Descrições curtas (público técnico): o que cada aba cobre e, quando útil,
+  // como se distingue de outra aba com que se possa confundir.
+  const FILE_HELP = {
+    'routes.txt': 'Linhas (route_id). Aparece aqui o que muda ao nível da linha: nome, cor, tipo, agência.',
+    'stops.txt': 'Paragens (stop_id): nome, coordenadas, tipo. Uma paragem só é "alterada" se algum destes campos mudar.',
+    'trips.txt': 'Viagens (trip_id) e a que route_id/service_id/direção estão atribuídas. Mostra viagens novas, removidas ou reatribuídas — não os dias em que circulam.',
+    'calendar.txt': 'Padrão semanal de cada service_id e período de validade. Muda aqui se os dias-tipo ou as datas de início/fim mudarem.',
+    'calendar_dates.txt': 'Exceções pontuais ao calendário (feriados, reforços). Uma viagem pode manter tudo igual em trips.txt e mesmo assim deixar de circular num dia por causa de uma exceção nova aqui.',
+    'stop_times.txt': 'Horário de cada viagem: sequência de paragens e horas. Comparado por assinatura agregada por viagem — "alterada" significa que a sequência ou as horas mudaram.',
+    'shapes.txt': 'Traçados geográficos (shape_id). Comparado por assinatura de pontos.',
+    'frequencies.txt': 'Viagens definidas por frequência (headway) em vez de horas fixas.',
+    'transfers.txt': 'Regras de transbordo entre paragens/linhas.',
+    'feed_info.txt': 'Metadados do feed: editor, período de validade, versão.',
+    'agency.txt': 'Operadores (agency_id): nome, URL, fuso, contactos.',
+    'fare_attributes.txt': 'Preços e regras base de tarifas.',
+    'fare_rules.txt': 'Associação de tarifas a linhas/zonas.',
+    'pathways.txt': 'Percursos pedonais dentro de estações.',
+    'levels.txt': 'Níveis/pisos de estações.',
+    'attributions.txt': 'Créditos e atribuições do feed.',
+  };
 
   const DISPLAY_HINT_FIELDS = ['route_short_name','route_long_name','stop_name','trip_headsign','agency_name','fare_id','service_id'];
 
@@ -1034,11 +1079,83 @@
     };
   }
 
+  // Agrega as alterações de viagens/horários por linha (route_id), para ver
+  // rapidamente que linhas foram mais afetadas. Usa os dados já carregados
+  // (lastOldData/lastNewData) para resolver trip_id -> route_id e o nome.
+  function buildRouteImpact(filename, result){
+    if (!lastOldData || !lastNewData) return '';
+    const tripsOld = (lastOldData['trips.txt'] || {}).rows || [];
+    const tripsNew = (lastNewData['trips.txt'] || {}).rows || [];
+    const routeOfTrip = new Map();
+    tripsOld.forEach(t => routeOfTrip.set(t.trip_id, t.route_id));
+    tripsNew.forEach(t => routeOfTrip.set(t.trip_id, t.route_id));
+
+    const routesRows = [ ...((lastOldData['routes.txt']||{}).rows||[]), ...((lastNewData['routes.txt']||{}).rows||[]) ];
+    const routeName = new Map();
+    routesRows.forEach(r => {
+      if (!routeName.has(r.route_id)){
+        const nm = (r.route_short_name || '').trim() || (r.route_long_name || '').trim() || '';
+        routeName.set(r.route_id, nm);
+      }
+    });
+
+    const perRoute = new Map(); // route_id -> {added, removed, modified}
+    const bump = (routeId, kind) => {
+      if (routeId === undefined) routeId = '(sem linha)';
+      if (!perRoute.has(routeId)) perRoute.set(routeId, { added:0, removed:0, modified:0 });
+      perRoute.get(routeId)[kind]++;
+    };
+
+    if (filename === 'trips.txt'){
+      result.diff.added.forEach(it => bump(it.row.route_id, 'added'));
+      result.diff.removed.forEach(it => bump(it.row.route_id, 'removed'));
+      result.diff.modified.forEach(it => bump((it.new || it.old || {}).route_id, 'modified'));
+      (result.diff.renamed || []).forEach(it => bump((it.newRow || it.oldRow || {}).route_id, 'modified'));
+    } else { // stop_times.txt: item.key é o trip_id
+      result.diff.added.forEach(it => bump(routeOfTrip.get(it.key), 'added'));
+      result.diff.removed.forEach(it => bump(routeOfTrip.get(it.key), 'removed'));
+      result.diff.modified.forEach(it => bump(routeOfTrip.get(it.key), 'modified'));
+    }
+
+    const rows = [...perRoute.entries()]
+      .map(([routeId, c]) => ({ routeId, ...c, total: c.added + c.removed + c.modified }))
+      .filter(r => r.total > 0)
+      .sort((a,b) => b.total - a.total);
+
+    if (!rows.length) return '';
+
+    const top = rows.slice(0, 12);
+    const rowsHtml = top.map(r => {
+      const nm = routeName.get(r.routeId) || '';
+      const chips = [];
+      if (r.added) chips.push(`<span class="impact-chip added">+${fmt(r.added)}</span>`);
+      if (r.removed) chips.push(`<span class="impact-chip removed">-${fmt(r.removed)}</span>`);
+      if (r.modified) chips.push(`<span class="impact-chip modified">~${fmt(r.modified)}</span>`);
+      return `<div class="impact-row" data-route="${esc(r.routeId)}">
+        <span class="impact-route">${esc(r.routeId)}</span>
+        <span class="impact-name">${esc(nm)}</span>
+        <span class="impact-bars">${chips.join('')}</span>
+      </div>`;
+    }).join('');
+    const moreNote = rows.length > 12 ? `<div class="impact-empty">+${fmt(rows.length - 12)} outras linhas com alterações</div>` : '';
+    const unit = filename === 'trips.txt' ? 'viagens' : 'horários';
+
+    return `<div class="impact">
+      <div class="impact-title">Impacto por linha <span class="hint">&middot; ${unit} afetados &middot; +adicionados / -removidos / ~alterados</span></div>
+      <div class="impact-grid">${rowsHtml}</div>
+      ${moreNote}
+    </div>`;
+  }
+
   function selectTab(filename){
     document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.filename === filename));
     const result = gtfsResults.find(r => r.filename === filename);
     const panel = document.getElementById('panelEl');
     panel.innerHTML = '';
+
+    if (FILE_HELP[filename]){
+      panel.insertAdjacentHTML('beforeend', `<div class="tab-desc">${FILE_HELP[filename]}</div>`);
+    }
 
     if (result.onlyOld){
       panel.insertAdjacentHTML('beforeend', '<div class="file-banner removed">Este ficheiro só existe no GTFS antigo — foi removido no novo feed.</div>');
@@ -1048,6 +1165,11 @@
 
     if ((result.diff.renamed || []).length){
       panel.insertAdjacentHTML('beforeend', '<div class="file-banner renamed-banner">Estas viagens têm um ID totalmente diferente, mas parecem ser a mesma viagem física (mesma linha, direção, destino e hora de partida) — provavelmente só o código de calendário mudou. Correspondência automática por heurística: confirma sempre antes de assumir.</div>');
+    }
+
+    if (filename === 'trips.txt' || filename === 'stop_times.txt'){
+      const impactHtml = buildRouteImpact(filename, result);
+      if (impactHtml) panel.insertAdjacentHTML('beforeend', impactHtml);
     }
 
     const sections = [
