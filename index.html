@@ -20,13 +20,12 @@
     <p class="subtitle">Carrega dois ficheiros GTFS (.zip) — o antigo e o novo — e vê exatamente o que mudou: linhas, paragens, viagens, calendários, horários e traçados.</p>
     <p class="privacy-note">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6l8-4z"/></svg>
-      Tudo é processado localmente no teu navegador. Os ficheiros GTFS não são enviados para nenhum servidor.
     </p>
   </header>
 
   <div class="mode-select" role="radiogroup" aria-label="Modo de comparação">
-    <button type="button" class="mode-btn active" id="modeInternaBtn" data-mode="interna">Interna (mesma empresa)</button>
-    <button type="button" class="mode-btn" id="modeExternaBtn" data-mode="externa">Operador externo (correspondência aproximada)</button>
+    <button type="button" class="mode-btn active" id="modeInternaBtn" data-mode="interna">Comparação internamente </button>
+    <button type="button" class="mode-btn" id="modeExternaBtn" data-mode="externa">Comparação com operador externo</button>
   </div>
   <p class="mode-hint" id="modeHint">Compara dois GTFS nossos, assumindo as mesmas normas — correspondência exata por route_id, stop_id, trip_id e service_id.</p>
 
