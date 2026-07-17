@@ -1,0 +1,7 @@
+{
+  "name": "comparador-gtfs",
+  "version": "2.0.0",
+  "description": "Comparador de feeds GTFS 100% client-side (interno e cross-operador)",
+  "type": "module",
+  "private": true
+}
